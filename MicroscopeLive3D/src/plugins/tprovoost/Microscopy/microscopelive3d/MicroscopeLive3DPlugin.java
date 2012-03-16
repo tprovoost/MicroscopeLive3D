@@ -8,7 +8,6 @@ import icy.gui.frame.progress.AnnounceFrame;
 import icy.gui.frame.progress.ToolTipFrame;
 import icy.gui.util.GuiUtil;
 import icy.image.IcyBufferedImage;
-import icy.plugin.interface_.PluginImageAnalysis;
 import icy.preferences.IcyPreferences;
 import icy.preferences.XMLPreferences;
 import icy.sequence.Sequence;
@@ -49,7 +48,7 @@ import plugins.tprovoost.Microscopy.MicroManagerForIcy.Tools.ImageGetter;
 import plugins.tprovoost.Microscopy.MicroManagerForIcy.Tools.MathTools;
 import plugins.tprovoost.Microscopy.MicroManagerForIcy.Tools.StageMover;
 
-public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition implements PluginImageAnalysis {
+public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 
 	// ------
 	// CORE
