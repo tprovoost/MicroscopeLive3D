@@ -13,6 +13,7 @@ import icy.preferences.XMLPreferences;
 import icy.sequence.Sequence;
 import icy.sequence.SequenceAdapter;
 import icy.system.thread.ThreadUtil;
+import icy.type.DataType;
 
 import java.awt.BorderLayout;
 import java.awt.Component;
@@ -24,7 +25,6 @@ import java.awt.event.AdjustmentEvent;
 import java.awt.event.AdjustmentListener;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
-import java.util.ArrayList;
 
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -85,13 +85,14 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 	// PREFERENCES
 	// -----------
 	private XMLPreferences _prefs = IcyPreferences.pluginRoot(this);
+	private JButton buttonRefreshSequence;
 	private static final String PREF_SLICES = "slices";
 	private static final String PREF_INTERVAL = "interval";
 	private static final String PREF_REFRESH = "refresh";
 
 	@Override
 	public void start() {
-		IcyFrame frame = new IcyFrame("Live 3D Options", false, true, false, true);
+		IcyFrame frame = new IcyFrame("Live 3D Options", true, true, false, true);
 		IcyLogo logo = new IcyLogo("Live 3D Options");
 		logo.setPreferredSize(new Dimension(200, 80));
 
@@ -159,6 +160,8 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 				if (keyevent.getKeyCode() == KeyEvent.VK_ENTER)
 					try {
 						_interval_ = Double.valueOf(_tf_interval.getText()).doubleValue();
+						if (video != null)
+							video.setPixelSizeZ(_interval_ / 1000);
 						_prefs.putDouble(PREF_INTERVAL, _interval_);
 					} catch (NumberFormatException e) {
 					}
@@ -239,11 +242,33 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 			}
 		});
 		panel_refresh = GuiUtil.generatePanel("Observation");
-		panel_refresh.setLayout(new BoxLayout(panel_refresh, BoxLayout.X_AXIS));
+		panel_refresh.setLayout(new BoxLayout(panel_refresh, BoxLayout.Y_AXIS));
+
 		JLabel lblRefresh = new JLabel("Refresh delay (ms):");
 		lblRefresh.setToolTipText("Time to wait for before another stack is acquired. Zero means continuous acquisition.");
-		panel_refresh.add(lblRefresh);
-		panel_refresh.add(_tfRefresh);
+
+		JPanel panelRefreshNorth = new JPanel();
+		panelRefreshNorth.setLayout(new BoxLayout(panelRefreshNorth, BoxLayout.X_AXIS));
+		panelRefreshNorth.add(lblRefresh);
+		panelRefreshNorth.add(_tfRefresh);
+
+		buttonRefreshSequence = new JButton("Refresh Sequence");
+		buttonRefreshSequence.setToolTipText("This option may lead to less fluidity");
+		buttonRefreshSequence.addActionListener(new ActionListener() {
+
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				if (video != null) {
+					video.updateChannelsBounds(true);
+					for (IcyBufferedImage img : video.getAllImage()) {
+						img.updateChannelsBounds();
+					}
+				}
+			}
+		});
+
+		panel_refresh.add(panelRefreshNorth);
+		panel_refresh.add(buttonRefreshSequence);
 
 		// ------------
 		// RUN OPTIONS
@@ -276,7 +301,8 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 		loadPreferences();
 		frame.setLayout(new GridLayout(1, 1));
 		frame.add(mainPanel);
-		frame.setSize(new Dimension(265, 296));
+		// frame.setSize(new Dimension(300, 300));
+		frame.pack();
 		frame.setVisible(true);
 		frame.addToMainDesktopPane();
 		frame.requestFocus();
@@ -300,10 +326,10 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 	private void createVideo(MicroscopeImage img) {
 		if (img != null) {
 			video = new LiveSequence(img);
-		}
-		else
+		} else
 			video = new LiveSequence();
 		video.setName("Live 3D");
+		video.setAutoUpdateChannelBounds(false);
 		// sets listener on the frame in order to remove this plugin
 		// from the GUI when the frame is closed
 		video.addListener(new SequenceAdapter() {
@@ -358,7 +384,7 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 	public void MainGUIClosed() {
 		_thread.stopThread();
 	}
-	
+
 	/**
 	 * Thread for the live 3D.
 	 * 
@@ -418,7 +444,7 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 			while (!_stop) {
 				while (_please_wait) {
 					try {
-						sleep(200);
+						sleep(100);
 					} catch (InterruptedException e) {
 					}
 				}
@@ -437,18 +463,15 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 							createVideo(img);
 						} else {
 							new AnnounceFrame("Please wait for the first acquisition.", 5);
-							// Acquisition
-							ArrayList<IcyBufferedImage> list = captureStacks();
-							if (_stop)
-								break;
+
 							createVideo(null);
-							try {
-								video.beginUpdate();
-								for (IcyBufferedImage img : list)
-									video.addImage(img);
-							} finally {
-								video.endUpdate();
+							for (int i = 0; i < _slices; ++i) {
+								IcyBufferedImage img = new IcyBufferedImage((int) mCore.getImageWidth(), (int) mCore.getImageHeight(), 1, DataType.USHORT);
+								img.setAutoUpdateChannelBounds(false);
+								// img.updateChannelsBounds();
+								video.addImage(img);
 							}
+							captureStacks(video);
 						}
 					} else {
 						// Verifications on the video dimensions (x,y,z)
@@ -461,130 +484,43 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 								throw new InterruptedException();
 							try {
 								video.beginUpdate();
-								video.removeAllImage(); // removing all images
-														// from the image before
-														// adding new one(s)
+								video.removeAllImage();
 								if (_slices <= 1) {
-									IcyBufferedImage img = ImageGetter.snapImage(mCore);
-									if (img != null)
-										video.addImage(img);
+									video.addImage(ImageGetter.snapImage(mCore));
 								} else {
 									// Acquisition
 									if (alreadyCapturing)
 										continue;
-									ArrayList<IcyBufferedImage> list = captureStacks();
-									if (_stop)
-										break;
-
-									// Normal case, and add
-									// the new ones.
-									for (IcyBufferedImage img : list)
+									for (int i = 0; i < _slices; ++i) {
+										IcyBufferedImage img = new IcyBufferedImage((int) mCore.getImageWidth(), (int) mCore.getImageHeight(), 1, DataType.USHORT);
+										img.setAutoUpdateChannelBounds(false);
 										video.addImage(img);
+									}
+									captureStacks(video);
 								}
 							} finally {
 								video.endUpdate();
 							}
 						} else {
-							try {
-								video.beginUpdate();
-								if (_slices == 1) {
-									IcyBufferedImage img = ImageGetter.snapImage(mCore);
-									video.setImage(0, 0, img);
-								} else {
+							if (_slices == 1) {
+								video.getImage(0, 0).setDataXYAsShort(0, ImageGetter.snapImageToShort(mCore));
+							} else {
+								try {
+									video.beginUpdate();
 									// Acquisition
-									ArrayList<IcyBufferedImage> list = captureStacks();
-									if (_stop)
-										break;
-									// Add images to sequence
-									try {
-										for (int i = 0; i < list.size(); ++i)
-											video.setImage(0, i, list.get(i));
-									} catch (Exception e) {
-										continue;
-									}
+									captureStacks(video);
+								} catch (Exception e) {
+									e.printStackTrace();
+								} finally {
+									video.endUpdate();
 								}
-							} catch (Exception e) {
-								e.printStackTrace();
-							} finally {
-								video.endUpdate();
 							}
-
 						}
 						video.notifyListeners();
 					}
-					if (_slices <= 1)
-						sleep(40);
-					else
-						sleep((int) _refreshrate);
-					
-					/*
-					// Verify if video is null. if it is, allocation of the
-					// video.
-					if (video == null) {
-						if (alreadyCapturing)
-							continue;
-						new AnnounceFrame("Please wait for the first acquisition.", 5);
-						// Acquisition
-						ArrayList<IcyBufferedImage> list = captureStacks();
-						if (_stop)
-							break;
-						createVideo(null);
-						try {
-							video.beginUpdate();
-							for (IcyBufferedImage img : list)
-								video.addImage(img);
-						} finally {
-							video.endUpdate();
-						}
-					} else {
-						// Verifications on the video dimensions (x,y,z)
-						if (video.getSizeZ() != _slices || video.getWidth() != (int) core.getImageWidth() || video.getHeight() != (int) core.getImageHeight()) {
-
-							// Throw an exception if image captured has no
-							// width
-							// or height
-							if (core.getImageWidth() <= 0 || core.getImageHeight() <= 0)
-								throw new InterruptedException();
-							try {
-								video.beginUpdate();
-								video.removeAllImage(); // removing all images
-														// from the image before
-														// adding new one(s)
-								// Acquisition
-								if (alreadyCapturing)
-									continue;
-								ArrayList<IcyBufferedImage> list = captureStacks();
-								if (_stop)
-									break;
-
-								// Normal case, and add
-								// the new ones.
-								for (IcyBufferedImage img : list)
-									video.addImage(img);
-							} finally {
-								video.endUpdate();
-							}
-						} else {
-							try {
-								video.beginUpdate();
-								// Acquisition
-								ArrayList<IcyBufferedImage> list = captureStacks();
-								if (_stop)
-									break;
-								// Add images to sequence
-								for (int i = 0; i < list.size(); ++i)
-									video.setImage(0, i, list.get(i));
-							} catch (Exception e) {
-								e.printStackTrace();
-							} finally {
-								video.endUpdate();
-							}
-
-						}
-					}
-					sleep((int) _refreshrate);
-					*/
+					sleep(10);
 				} catch (Exception e) {
+					break;
 				}
 			}
 			ThreadUtil.invokeLater(new Runnable() {
@@ -596,6 +532,9 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 				}
 			});
 			notifyAcquisitionOver();
+			for (IcyBufferedImage img : video.getAllImage())
+				img.setAutoUpdateChannelBounds(true);
+			video.setAutoUpdateChannelBounds(true);
 			video = null;
 		}
 
@@ -609,14 +548,13 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 		 */
 		synchronized void pauseThread(boolean b) {
 			_please_wait = b;
-			if (_slices <= 1) {				
+			if (_slices <= 1) {
 				try {
-					MathTools.waitFor((long) (mCore.getExposure()+200));
+					MathTools.waitFor((long) (mCore.getExposure() + 200));
 				} catch (Exception e) {
 					e.printStackTrace();
 				}
-			}
-			else {
+			} else {
 				// waiting for 3D the end of the capture
 				while (alreadyCapturing) {
 					try {
@@ -634,7 +572,7 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 		synchronized void stopThread() {
 			_stop = true;
 			ThreadUtil.invokeNow(new Runnable() {
-				
+
 				@Override
 				public void run() {
 					btn_stop.setEnabled(false);
@@ -661,7 +599,7 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 		 * 
 		 * @return Returns an ArrayList of all stacks as IcyBufferedImages.
 		 */
-		ArrayList<IcyBufferedImage> captureStacks() {
+		void captureStacks(Sequence s) {
 			notifyAcquisitionStarted(true);
 			setAlreadyCapturing(true);
 			int wantedSlices = _slices;
@@ -669,20 +607,19 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 			double wantedInterval = _interval_;
 			double supposedLastPosition = 0;
 			_nameZ = mCore.getFocusDevice();
-			ArrayList<IcyBufferedImage> list = new ArrayList<IcyBufferedImage>();
 			try {
 				absoluteZ = mCore.getPosition(_nameZ);
-				supposedLastPosition = absoluteZ + ((wantedDistribution-1)*wantedInterval);
+				supposedLastPosition = absoluteZ + ((wantedDistribution - 1) * wantedInterval);
 				StageMover.moveZRelative(-((wantedSlices - wantedDistribution) * wantedInterval));
-				mCore.waitForDevice(_nameZ);
-				list.add(ImageGetter.snapImage(mCore));
+				// mCore.waitForDevice(_nameZ);
+				s.getImage(0, 0).setDataXYAsShort(0, ImageGetter.snapImageToShort(mCore));
 			} catch (Exception e) {
 				new AnnounceFrame("Error wile moving");
-				return list;
+				return;
 			}
 			for (int z = 1; z < _slices; ++z) {
 				if (_stop)
-					return null;
+					return;
 				while (_please_wait) {
 					if (alreadyCapturing)
 						setAlreadyCapturing(false);
@@ -695,15 +632,8 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 					setAlreadyCapturing(true);
 				try {
 					StageMover.moveZRelative(wantedInterval);
-					mCore.waitForDevice(_nameZ);
-					if (mCore.isSequenceRunning()) {
-						mCore.waitForExposure();
-						mCore.waitForImageSynchro();
-						list.add(ImageGetter.getImageFromLive(mCore));
-					} else {
-						mCore.waitForImageSynchro();
-						list.add(ImageGetter.snapImage(mCore));
-					}
+					// mCore.waitForDevice(_nameZ);
+					s.getImage(0, z).setDataXYAsShort(0, ImageGetter.snapImageToShort(mCore));
 				} catch (Exception e) {
 					break;
 				}
@@ -712,9 +642,8 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 			}
 			try {
 				if (absoluteZ != 0) {
-					mCore.waitForDevice(_nameZ);
-					if (supposedLastPosition !=0)
-					{
+					// mCore.waitForDevice(_nameZ);
+					if (supposedLastPosition != 0) {
 						double actualPos = mCore.getPosition(_nameZ);
 						absoluteZ += actualPos - supposedLastPosition;
 					}
@@ -725,7 +654,6 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 			}
 			setAlreadyCapturing(false);
 			notifyAcquisitionOver();
-			return list;
 		}
 	}
 
@@ -733,89 +661,5 @@ public class MicroscopeLive3DPlugin extends MicroscopePluginAcquisition {
 	public String getRenderedName() {
 		return "Live 3D";
 	}
-	
-	/*
-	 * Replace live 
-					// Verify if video is null. if it is, allocation of the
-					// video.
-					if (video == null) {
-						if (alreadyCapturing)
-							continue;
-						if (_slices <= 1) {
-							IcyBufferedImage img = ImageGetter.getImageSnappedToIcyBuffer(core);
-							createVideo(img);
-						} else {
-							new AnnounceFrame("Please wait for the first acquisition.", 5);
-							// Acquisition
-							ArrayList<IcyBufferedImage> list = captureStacks();
-							if (_stop)
-								break;
-							createVideo(null);
-							try {
-								video.beginUpdate();
-								for (IcyBufferedImage img : list)
-									video.addImage(img);
-							} finally {
-								video.endUpdate();
-							}
-						}
-					} else {
-						// Verifications on the video dimensions (x,y,z)
-						if (video.getSizeZ() != _slices || video.getWidth() != (int) core.getImageWidth() || video.getHeight() != (int) core.getImageHeight()) {
 
-							// Throw an exception if image captured has no
-							// width
-							// or height
-							if (core.getImageWidth() <= 0 || core.getImageHeight() <= 0)
-								throw new InterruptedException();
-							try {
-								video.beginUpdate();
-								video.removeAllImage(); // removing all images
-														// from the image before
-														// adding new one(s)
-								if (_slices <= 1) {
-									IcyBufferedImage img = ImageGetter.getImageSnappedToIcyBuffer(core);
-									if (img != null)
-										video.addImage(img);
-								} else {
-									// Acquisition
-									if (alreadyCapturing)
-										continue;
-									ArrayList<IcyBufferedImage> list = captureStacks();
-									if (_stop)
-										break;
-
-									// Normal case, and add
-									// the new ones.
-									for (IcyBufferedImage img : list)
-										video.addImage(img);
-								}
-							} finally {
-								video.endUpdate();
-							}
-						} else {
-							try {
-								video.beginUpdate();
-								if (_slices == 1) {
-									IcyBufferedImage img = ImageGetter.getImageSnappedToIcyBuffer(core);
-									video.setImage(0, 0, img);
-								} else {
-									// Acquisition
-									ArrayList<IcyBufferedImage> list = captureStacks();
-									if (_stop)
-										break;
-									// Add images to sequence
-									for (int i = 0; i < list.size(); ++i)
-										video.setImage(0, i, list.get(i));
-								}
-							} catch (Exception e) {
-								e.printStackTrace();
-							} finally {
-								video.endUpdate();
-							}
-
-						}
-					}
-					sleep((int) _refreshrate);
-					*/
 }
